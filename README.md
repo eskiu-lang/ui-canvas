@@ -28,8 +28,8 @@ void Game() {
 }
 ```
 
-`examples/demo` bounces pixel-art sprites from an atlas made in code (`ui run ios`, or
-`android`).
+`examples/demo` bounces pixel-art sprites from an atlas made in code (`ui run ios`,
+`android` or `web`).
 
 ## `<canvas>`
 
@@ -59,10 +59,13 @@ free(path);
 
 ## `<canvas/ui>`
 
-`CanvasView(style, running, draw)` is a `GpuView` whose canvas is drawn by `draw` once per
-display frame (ui's `use_frame`) while `running`, and once each time the view gets a new size.
-The canvas is in points, like the layout. It draws on iOS and Android; on the web and the
-desktop it is an empty box.
+`CanvasView(style, running, draw)` is a view whose canvas is drawn by `draw` once per display
+frame (ui's `use_frame`) while `running`, and once each time the view gets a new size. The
+canvas is in points, like the layout. On iOS and Android it is a `GpuView` drawn with WebGPU;
+on the web (and the desktop, which runs the web build) a `<canvas>` element drawn with the
+browser's Canvas 2D, through the same calls: one browser call per draw rather than batches,
+a tint through a scratch canvas, and PNG and JPEG images (the browser decodes nothing
+synchronously).
 
 ## Tests
 
