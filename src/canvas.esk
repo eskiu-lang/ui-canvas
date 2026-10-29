@@ -17,11 +17,18 @@ import <math>;
 import <mem>;
 import <list>;
 import <result>;
+#ifndef __wasm__
 import <gpu/raw>;
 import <gpu/core>;
 import <gpu/render>;
+#endif
 import <gpu/image>;
 import <fs>;
+
+#ifdef __wasm__
+extern double sin(double x);
+extern double cos(double x);
+#endif
 
 struct CanvasRect { float x; float y; float width; float height; }
 
@@ -33,6 +40,49 @@ struct Paint { float alpha = 1.0; uint32 tint = 0xffffffff; bool nearest; }
 // An affine transform: a point (x, y) goes to (a x + c y + tx, b x + d y + ty).
 struct CanvasMatrix { float a; float b; float c; float d; float tx; float ty; }
 
+#ifdef __wasm__
+// An image on the page: a <canvas> of its pixels (native/web/canvas.js), its size in pixels.
+struct CanvasImage { int id; int width; int height; }
+
+// A canvas drawing on a CanvasView's <canvas> element with the browser's Canvas 2D.
+struct Canvas {
+    int view;
+    int draws;
+    float pixel_width;
+    float pixel_height;
+    float scale;
+    CanvasMatrix m;
+    List<CanvasMatrix> saved;
+    bool drawing;
+}
+
+// native/web/canvas.js.
+extern int canvas_web_image(int width, int height, *uint8 rgba);
+extern void canvas_web_image_write(int id, *uint8 rgba);
+extern void canvas_web_image_release(int id);
+extern int canvas_web_begin(int view, int width, int height, uint32 clear);
+extern void canvas_web_draw(int view, int image, int nearest, float sx, float sy, float sw, float sh,
+                            float a, float b, float c, float d, float tx, float ty, uint32 tint, float alpha);
+extern void canvas_web_fill(int view, float a, float b, float c, float d, float tx, float ty, uint32 color);
+
+// A canvas for the <canvas> element registered as `view` (CanvasView makes it).
+Canvas canvas_web_new(int view) {
+    Canvas c;
+    c.view = view;
+    c.scale = 1.0;
+    return c;
+}
+
+void Canvas_release(*Canvas self) { self.saved.free(); }
+
+// An image from width * height pixels of 4 bytes each (RGBA, the top row first).
+Result<CanvasImage, string> Canvas_image_rgba(*Canvas self, int width, int height, *uint8 rgba) {
+    int id = canvas_web_image(width, height, rgba);
+    if (id <= 0) { return Err<CanvasImage, string>("canvas: the page could not make the image"); }
+    return Ok<CanvasImage, string>(CanvasImage{id, width, height});
+}
+
+#else
 // An image on the GPU, its size in pixels.
 struct CanvasImage { GpuTexture texture; int width; int height; }
 
@@ -119,6 +169,8 @@ Result<CanvasImage, string> Canvas_image_rgba(*Canvas self, int width, int heigh
     return Ok<CanvasImage, string>(CanvasImage{t, width, height});
 }
 
+#endif
+
 // An image from a decoded <gpu/image> Bitmap.
 Result<CanvasImage, string> Canvas_image(*Canvas self, *Bitmap image) {
     return Canvas_image_rgba(self, (int)image.width, (int)image.height, image.rgba);
@@ -163,6 +215,25 @@ Result<CanvasImage, string> Canvas_image_load(*Canvas self, string path) {
     return Canvas_image_decode(self, data, (uint64)n);
 }
 
+#ifdef __wasm__
+// Replaces the image's pixels (the same size, 4 bytes each), for one drawn by the CPU.
+void CanvasImage_write(*CanvasImage self, *uint8 rgba) { canvas_web_image_write(self.id, rgba); }
+
+void CanvasImage_release(*CanvasImage self) { canvas_web_image_release(self.id); }
+
+// Starts a frame on the view's <canvas>, `width` by `height` pixels, `scale` pixels per canvas
+// unit, cleared to `clear` (0xRRGGBBAA). Nothing is drawn while the element is not there yet.
+void Canvas_begin(*Canvas self, uint32 width, uint32 height, float scale, uint32 clear) {
+    self.pixel_width = (float)width;
+    self.pixel_height = (float)height;
+    self.scale = scale > 0 ? scale : 1.0;
+    self.m = CanvasMatrix{self.scale, 0, 0, self.scale, 0, 0};
+    self.saved.clear();
+    self.draws = 0;
+    self.drawing = canvas_web_begin(self.view, (int)width, (int)height, clear) != 0;
+}
+
+#else
 // Replaces the image's pixels (the same size, 4 bytes each), for one drawn by the CPU.
 void CanvasImage_write(*CanvasImage self, *uint8 rgba) { self.texture.write((*void)rgba); }
 
@@ -183,6 +254,8 @@ void Canvas_begin(*Canvas self, WGPUTextureView target, uint32 width, uint32 hei
     self.draws.clear();
     self.drawing = true;
 }
+
+#endif
 
 // The canvas's size in canvas units.
 float Canvas_width(const Canvas* self) { return self.pixel_width / self.scale; }
@@ -215,6 +288,23 @@ void Canvas_rotate(*Canvas self, float degrees) {
     Canvas_concat(self, CanvasMatrix{cs, sn, -sn, cs, 0, 0});
 }
 
+#ifdef __wasm__
+// The current transform after the unit square to `dst`, so a negative width or height mirrors.
+CanvasMatrix _canvas_unit(*Canvas self, CanvasRect dst) {
+    CanvasMatrix m = self.m;
+    return CanvasMatrix{m.a * dst.width, m.b * dst.width, m.c * dst.height, m.d * dst.height,
+        m.a * dst.x + m.c * dst.y + m.tx, m.b * dst.x + m.d * dst.y + m.ty};
+}
+
+void _canvas_quad(*Canvas self, *CanvasImage image, bool nearest, CanvasRect src, CanvasRect dst, uint32 tint, float alpha) {
+    if (!self.drawing) { return; }
+    CanvasMatrix u = _canvas_unit(self, dst);
+    canvas_web_draw(self.view, image.id, nearest ? 1 : 0, src.x, src.y, src.width, src.height,
+        u.a, u.b, u.c, u.d, u.tx, u.ty, tint, alpha);
+    self.draws++;
+}
+
+#else
 void _canvas_vertex(*Canvas self, float x, float y, float u, float v, *float color) {
     CanvasMatrix m = self.m;
     float px = m.a * x + m.c * y + m.tx;
@@ -255,6 +345,8 @@ void _canvas_quad(*Canvas self, *CanvasImage image, bool nearest, CanvasRect src
     _canvas_vertex(self, x0, y1, u0, v1, &color[0]);
 }
 
+#endif
+
 // Draws the `src` rect of `image` (in its pixels) into `dst` (in canvas units). A negative
 // width or height in `dst` mirrors the image.
 void Canvas_draw_image_rect(*Canvas self, *CanvasImage image, CanvasRect src, CanvasRect dst, Paint paint) {
@@ -269,9 +361,27 @@ void Canvas_draw_image(*Canvas self, *CanvasImage image, float x, float y, Paint
 
 // Fills `rect` with `color` (0xRRGGBBAA).
 void Canvas_fill_rect(*Canvas self, CanvasRect rect, uint32 color) {
+#ifdef __wasm__
+    if (!self.drawing) { return; }
+    CanvasMatrix u = _canvas_unit(self, rect);
+    canvas_web_fill(self.view, u.a, u.b, u.c, u.d, u.tx, u.ty, color);
+    self.draws++;
+#else
     _canvas_quad(self, &self.white, true, CanvasRect{0, 0, 1, 1}, rect, color, 1.0);
+#endif
 }
 
+#ifdef __wasm__
+// How many draws the frame so far took (each is its own call on the web).
+int Canvas_draw_calls(const Canvas* self) { return self.draws; }
+
+// Ends the frame (the page shows what was drawn when the browser paints).
+Result<int, string> Canvas_end(*Canvas self) {
+    if (!self.drawing) { return Ok<int, string>(0); }
+    self.drawing = false;
+    return Ok<int, string>(self.draws);
+}
+#else
 // How many draw calls the frame so far takes.
 int Canvas_draw_calls(const Canvas* self) { return self.draws.size; }
 
@@ -300,3 +410,4 @@ Result<int, string> Canvas_end(*Canvas self) {
     pass.end()?;
     return Ok<int, string>(self.draws.size);
 }
+#endif

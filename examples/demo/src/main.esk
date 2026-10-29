@@ -1,12 +1,10 @@
 // The demo: pixel-art sprites bouncing on a CanvasView, drawn once per display frame from a
-// small atlas made in code, scaled up with nearest sampling. `ui run ios` (or android).
+// small atlas made in code, scaled up with nearest sampling. `ui run ios`, `android` or `web`.
 import <math>;
 import <ui>;
 import <ui/kit>;
 import <canvas/ui>;
-#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
 import <canvas>;
-#endif
 
 struct Sprite { float x; float y; float vx; float vy; int cell; }
 
@@ -29,10 +27,8 @@ uint32 face_color(char c) {
     return 0;
 }
 
-#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
 CanvasImage atlas;
 bool has_atlas;
-#endif
 Sprite[12] sprites;
 bool placed;
 
@@ -49,7 +45,6 @@ void Demo() {
     *Signal<bool> playing = use_signal<bool>(true);
     Column(Style{grow: 1, padding: 16, gap: 12, background: kit.page}) {
         CanvasView(Style{grow: 1, radius: 12}, playing.get(), void(*Canvas canvas, Tick tick) {
-#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
             if (!has_atlas) {
                 uint8[16 * 8 * 4] rgba;
                 for (i in 0..16 * 8) {
@@ -76,7 +71,6 @@ void Demo() {
                 canvas.fill_rect(CanvasRect{s.x + 4, s.y + 44, 40, 4}, 0x00000060);
                 canvas.draw_image_rect(&atlas, cell, s.vx < 0 ? CanvasRect{s.x + 48, s.y, -48, 48} : CanvasRect{s.x, s.y, 48, 48}, Paint{nearest: true});
             }
-#endif
         });
         Button(playing.get() ? "Pause" : "Play") { playing.set(!playing.get()); }
     }

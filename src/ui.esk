@@ -9,8 +9,9 @@
 // The canvas is in points, like the layout, and is cleared to transparent before each draw.
 // Images are made from the canvas the callback gets (canvas.image_decode, image_rgba), the
 // first time it runs; the canvas, and what was made from it, lives as long as the view's
-// surface (a (0, 0) resize on Android drops it). Draws run on iOS and Android;
-// on the web and the desktop CanvasView is an empty box and the callback is never called.
+// surface (a (0, 0) resize on Android drops it). On iOS and Android it draws with the GPU;
+// on the web (and the desktop, which runs the web build) with the browser's Canvas 2D on a
+// <canvas> element: the same calls, PNG and JPEG images.
 
 import <io>;
 import <mem>;
@@ -22,6 +23,9 @@ import <gpu/ui>;
 import <gpu/raw>;
 import <gpu/core>;
 import <gpu/render>;
+import <canvas>;
+#elif defined(__wasm__)
+import <string>;
 import <canvas>;
 #else
 struct Canvas { int unused; }
@@ -36,6 +40,10 @@ struct _CanvasHost {
     bool has_surface;
     Canvas canvas;
     bool has_canvas;
+#elif defined(__wasm__)
+    Canvas canvas;
+    bool has_canvas;
+    int view;
 #endif
     uint32 width;
     uint32 height;
@@ -94,6 +102,25 @@ void _canvas_draw(*_CanvasHost host, Tick tick) {
 }
 #endif
 
+#ifdef __wasm__
+// The view's <canvas>, `width` by `height` points at the window's scale.
+void _canvas_draw(*_CanvasHost host, Tick tick) {
+    if (host.width == 0 || host.height == 0) { return; }
+    if (!host.has_canvas) {
+        host.canvas = canvas_web_new(host.view);
+        host.has_canvas = true;
+    }
+    uint32 pixel_width = (uint32)(host.width * host.scale + 0.5);
+    uint32 pixel_height = (uint32)(host.height * host.scale + 0.5);
+    host.canvas.begin(pixel_width, pixel_height, host.scale, 0x00000000);
+    if (!host.canvas.drawing) { return; }
+    host.draw(&host.canvas, tick);
+    host.canvas.end();
+}
+
+int _canvas_next_view;
+#endif
+
 // A canvas drawn by `draw` once per display frame while `running`, and each time the view
 // gets a new size.
 void CanvasView(Style style, bool running, escaping fn(*Canvas, Tick)->void draw) {
@@ -107,6 +134,8 @@ void CanvasView(Style style, bool running, escaping fn(*Canvas, Tick)->void draw
 #if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
             _canvas_drop_surface(host);
             if (host.has_gpu) { host.gpu.release(); }
+#elif defined(__wasm__)
+            if (host.has_canvas) { host.canvas.release(); }
 #endif
             _canvas_release_draw(host.draw);
             free(host.error);
@@ -127,10 +156,27 @@ void CanvasView(Style style, bool running, escaping fn(*Canvas, Tick)->void draw
         _canvas_draw(host, Tick{0, 0});
 #endif
     });
+#ifdef __wasm__
+    if (host.view == 0) { host.view = ++_canvas_next_view; }
+    use_frame(running, void(Tick tick) { _canvas_draw(host, tick); });
+    // The element's size in points, from the layout; a new size draws again.
+    ui_on_layout(void(Frame frame) {
+        if ((uint32)frame.width == host.width && (uint32)frame.height == host.height) { return; }
+        host.width = (uint32)frame.width;
+        host.height = (uint32)frame.height;
+        _canvas_draw(host, Tick{0, 0});
+    });
+    String id;
+    defer String_free(&id);
+    String_appendf(&id, "%d", host.view);
+    ui_native_prop("id", id.data);
+    NativeView(style, "canvas", void(string name, string payload) {});
+#else
     use_frame(running, void(Tick tick) {
 #if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
         _canvas_draw(host, tick);
 #endif
     });
     GpuView(style);
+#endif
 }
