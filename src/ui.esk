@@ -24,11 +24,9 @@ import <gpu/raw>;
 import <gpu/core>;
 import <gpu/render>;
 import <canvas>;
-#elif defined(__wasm__)
+#else
 import <string>;
 import <canvas>;
-#else
-struct Canvas { int unused; }
 #endif
 
 struct _CanvasHost {
