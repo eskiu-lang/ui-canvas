@@ -1,0 +1,125 @@
+// Draws into a 16x16 texture and checks the pixels: nearest and linear sampling, atlas cells,
+// alpha, tint, mirroring, transforms, fills, batching.
+import <io>;
+import <mem>;
+import <gpu>;
+import <canvas>;
+
+int failures;
+
+void check(bool ok, string what) {
+    if (!ok) { printf("FAIL %s\n", what); failures++; }
+}
+
+uint32 pixel(*uint8 px, int x, int y) {
+    *uint8 p = px + (y * 16 + x) * 4;
+    return (uint32)p[0] << 24 | (uint32)p[1] << 16 | (uint32)p[2] << 8 | (uint32)p[3];
+}
+
+bool near(uint32 got, uint32 want) {
+    for (i in 0..4) {
+        int a = (int)((got >> (i * 8)) & 255);
+        int b = (int)((want >> (i * 8)) & 255);
+        if (a - b > 2 || b - a > 2) return false;
+    }
+    return true;
+}
+
+Result<int, string> run() {
+    Gpu gpu = gpu_open()?;
+    defer gpu.release();
+    GpuTexture target = gpu.target(16, 16)?;
+    defer target.release();
+    Canvas canvas = canvas_new(&gpu, target.format)?;
+    defer canvas.release();
+    // A 2x2 atlas: red, green on top; blue, white below.
+    uint32[4] cells = {0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff};
+    uint8[16] rgba;
+    for (i in 0..4) {
+        for (k in 0..4) rgba[i * 4 + k] = (uint8)((cells[i] >> (24 - k * 8)) & 255);
+    }
+    CanvasImage atlas = canvas.image_rgba(2, 2, &rgba[0])?;
+    defer atlas.release();
+    *uint8 px = alloc<uint8>(16 * 16 * 4);
+    defer free(px);
+
+    // Nearest: each atlas pixel becomes an exact 8x8 block.
+    canvas.begin(target.view, 16, 16, 1.0, 0x000000ff);
+    canvas.draw_image_rect(&atlas, CanvasRect{0, 0, 2, 2}, CanvasRect{0, 0, 16, 16}, Paint{nearest: true});
+    canvas.end()?;
+    target.read(px)?;
+    check(pixel(px, 1, 1) == 0xff0000ff && pixel(px, 7, 7) == 0xff0000ff, "nearest: red block");
+    check(pixel(px, 8, 0) == 0x00ff00ff && pixel(px, 0, 8) == 0x0000ffff && pixel(px, 15, 15) == 0xffffffff, "nearest: the other blocks");
+
+    // Linear: the middle of the image blends its neighbours.
+    canvas.begin(target.view, 16, 16, 1.0, 0x000000ff);
+    canvas.draw_image_rect(&atlas, CanvasRect{0, 0, 2, 2}, CanvasRect{0, 0, 16, 16}, Paint{});
+    canvas.end()?;
+    target.read(px)?;
+    uint32 mid = pixel(px, 7, 7);
+    check(mid != 0xff0000ff && ((mid >> 16) & 255) > 0, "linear: smoothed");
+
+    // An atlas cell, scaled by 2 units per pixel of the canvas (scale 2).
+    canvas.begin(target.view, 16, 16, 2.0, 0x000000ff);
+    canvas.draw_image_rect(&atlas, CanvasRect{1, 1, 1, 1}, CanvasRect{2, 2, 4, 4}, Paint{nearest: true});
+    canvas.end()?;
+    target.read(px)?;
+    check(pixel(px, 3, 3) == 0x000000ff && pixel(px, 4, 4) == 0xffffffff && pixel(px, 11, 11) == 0xffffffff, "cell at scale 2");
+    check(pixel(px, 12, 12) == 0x000000ff, "only the cell");
+
+    // Alpha and tint over black.
+    canvas.begin(target.view, 16, 16, 1.0, 0x000000ff);
+    canvas.draw_image_rect(&atlas, CanvasRect{1, 1, 1, 1}, CanvasRect{0, 0, 8, 16}, Paint{alpha: 0.5, nearest: true});
+    canvas.draw_image_rect(&atlas, CanvasRect{1, 1, 1, 1}, CanvasRect{8, 0, 8, 16}, Paint{tint: 0xff8000ff, nearest: true});
+    canvas.end()?;
+    target.read(px)?;
+    check(near(pixel(px, 2, 2), 0x808080ff), "alpha 0.5");
+    check(near(pixel(px, 12, 2), 0xff8000ff), "tint");
+
+    // Mirrored: a negative width puts the right column on the left.
+    canvas.begin(target.view, 16, 16, 1.0, 0x000000ff);
+    canvas.draw_image_rect(&atlas, CanvasRect{0, 0, 2, 1}, CanvasRect{16, 0, -16, 16}, Paint{nearest: true});
+    canvas.end()?;
+    target.read(px)?;
+    check(pixel(px, 1, 1) == 0x00ff00ff && pixel(px, 14, 1) == 0xff0000ff, "mirrored");
+
+    // Fills under a transform stack, batched into one draw call; the atlas makes a second.
+    canvas.begin(target.view, 16, 16, 1.0, 0x000000ff);
+    canvas.save();
+    canvas.translate(8, 8);
+    canvas.fill_rect(CanvasRect{0, 0, 4, 4}, 0x00ff00ff);
+    canvas.scale(2, 2);
+    canvas.fill_rect(CanvasRect{2, 2, 1, 1}, 0x0000ffff);
+    canvas.restore();
+    canvas.fill_rect(CanvasRect{0, 0, 2, 2}, 0xff0000ff);
+    check(canvas.draw_calls() == 1, "fills share a draw call");
+    canvas.draw_image(&atlas, 0, 14, Paint{nearest: true});
+    check(canvas.draw_calls() == 2, "an image starts another");
+    check(canvas.width() == 16 && canvas.height() == 16, "size in units");
+    canvas.end()?;
+    target.read(px)?;
+    check(pixel(px, 9, 9) == 0x00ff00ff && pixel(px, 12, 12) == 0x0000ffff && pixel(px, 13, 13) == 0x0000ffff, "translate and scale");
+    check(pixel(px, 1, 1) == 0xff0000ff && pixel(px, 4, 4) == 0x000000ff, "restore");
+    check(pixel(px, 0, 14) == 0xff0000ff && pixel(px, 1, 15) == 0xffffffff, "draw_image at its size");
+
+    // Rotation by 90 degrees about the canvas's center.
+    canvas.begin(target.view, 16, 16, 1.0, 0x000000ff);
+    canvas.translate(8, 8);
+    canvas.rotate(90);
+    canvas.fill_rect(CanvasRect{0, -1, 6, 2}, 0xffffffff);
+    canvas.end()?;
+    target.read(px)?;
+    check(pixel(px, 8, 12) == 0xffffffff && pixel(px, 12, 8) == 0x000000ff, "rotate");
+    return Ok<int, string>(0);
+}
+
+int main() {
+    Result<int, string> r = run();
+    if (!r.ok) {
+        printf("error: %s\n", r.error);
+        return 1;
+    }
+    if (failures > 0) return 1;
+    printf("PASS canvas\n");
+    return 0;
+}

@@ -1,0 +1,90 @@
+// The demo: pixel-art sprites bouncing on a CanvasView, drawn once per display frame from a
+// small atlas made in code, scaled up with nearest sampling. `ui run ios` (or android).
+import <math>;
+import <ui>;
+import <ui/kit>;
+import <canvas/ui>;
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+import <canvas>;
+#endif
+
+struct Sprite { float x; float y; float vx; float vy; int cell; }
+
+// An 8x8 face per cell, two cells side by side: four colors, '.' is clear.
+string kFaces =
+    "..####....####.."
+    ".#yyyy#..#pppp#."
+    "#yykyky##ppkpkp#"
+    "#yyyyyy##pppppp#"
+    "#ykyyky##pkppkp#"
+    "#yykkyy##ppkkpp#"
+    ".#yyyy#..#pppp#."
+    "..####....####..";
+
+uint32 face_color(char c) {
+    if (c == '#') return 0x202020ff;
+    if (c == 'y') return 0xffd23cff;
+    if (c == 'p') return 0xff7ab0ff;
+    if (c == 'k') return 0x202020ff;
+    return 0;
+}
+
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+CanvasImage atlas;
+bool has_atlas;
+#endif
+Sprite[12] sprites;
+bool placed;
+
+void place(float width, float height) {
+    for (i in 0..12) {
+        sprites[i] = Sprite{(float)(i * 37 % 300), (float)(i * 53 % 500), 40 + (float)(i * 17 % 60), 60 + (float)(i * 29 % 80), i % 2};
+        if (sprites[i].x > width - 48) sprites[i].x = width / 2;
+        if (sprites[i].y > height - 48) sprites[i].y = height / 2;
+    }
+    placed = true;
+}
+
+void Demo() {
+    *Signal<bool> playing = use_signal<bool>(true);
+    Column(Style{grow: 1, padding: 16, gap: 12, background: kit.page}) {
+        CanvasView(Style{grow: 1, radius: 12}, playing.get(), void(*Canvas canvas, Tick tick) {
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+            if (!has_atlas) {
+                uint8[16 * 8 * 4] rgba;
+                for (i in 0..16 * 8) {
+                    uint32 c = face_color(kFaces[i]);
+                    for (k in 0..4) rgba[i * 4 + k] = (uint8)((c >> (24 - k * 8)) & 255);
+                }
+                Result<CanvasImage, string> made = canvas.image_rgba(16, 8, &rgba[0]);
+                if (!made.ok) return;
+                atlas = made.value;
+                has_atlas = true;
+            }
+            float w = canvas.width();
+            float h = canvas.height();
+            if (!placed) place(w, h);
+            canvas.fill_rect(CanvasRect{0, 0, w, h}, 0x14182aff);
+            float dt = (float)tick.delta;
+            for (i in 0..12) {
+                *Sprite s = &sprites[i];
+                s.x += s.vx * dt;
+                s.y += s.vy * dt;
+                if (s.x < 0 || s.x > w - 48) { s.vx = -s.vx; s.x = s.x < 0 ? 0 : w - 48; }
+                if (s.y < 0 || s.y > h - 48) { s.vy = -s.vy; s.y = s.y < 0 ? 0 : h - 48; }
+                CanvasRect cell = CanvasRect{(float)(s.cell * 8), 0, 8, 8};
+                canvas.fill_rect(CanvasRect{s.x + 4, s.y + 44, 40, 4}, 0x00000060);
+                canvas.draw_image_rect(&atlas, cell, s.vx < 0 ? CanvasRect{s.x + 48, s.y, -48, 48} : CanvasRect{s.x, s.y, 48, 48}, Paint{nearest: true});
+            }
+#endif
+        });
+        Button(playing.get() ? "Pause" : "Play") { playing.set(!playing.get()); }
+    }
+}
+
+void ui_app_start(int which) {
+    kit_follow_system();
+    ui_mount() { Demo(); }
+}
+
+void ui_app_stop() {}

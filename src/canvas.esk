@@ -1,0 +1,276 @@
+// canvas.esk: a 2D canvas over <gpu> (<canvas>). Images and atlas cells drawn into a rect,
+// filled rects, an alpha and a tint per draw, nearest or linear sampling, and a transform
+// stack. A frame is drawn between begin and end, into any view: a GpuView's surface frame
+// (<canvas/ui>), or a texture to read back.
+//
+//     Canvas canvas = canvas_new(&gpu, surface.format)?;
+//     CanvasImage atlas = canvas.image_decode(png, png_len)?;
+//     canvas.begin(frame.view, width, height, 2.0, 0x000000ff);
+//     canvas.draw_image_rect(&atlas, CanvasRect{0, 0, 16, 16}, CanvasRect{40, 40, 64, 64}, Paint{nearest: true});
+//     canvas.end()?;
+//
+// Coordinates are in canvas units with the origin at the top left: a pixel of the target is
+// 1 / scale of a unit, so drawing in points matches the UI's layout. Draws are batched and
+// sent in end(), one draw call per run of draws with the same image and sampling.
+
+import <math>;
+import <mem>;
+import <list>;
+import <result>;
+import <gpu/raw>;
+import <gpu/core>;
+import <gpu/render>;
+import <gpu/image>;
+
+struct CanvasRect { float x; float y; float width; float height; }
+
+// How an image is drawn: its opacity (0 to 1), a color its pixels are multiplied by
+// (0xRRGGBBAA; white leaves them as they are) and the sampling: nearest keeps pixel art
+// sharp when it is scaled, linear smooths it.
+struct Paint { float alpha = 1.0; uint32 tint = 0xffffffff; bool nearest; }
+
+// An affine transform: a point (x, y) goes to (a x + c y + tx, b x + d y + ty).
+struct CanvasMatrix { float a; float b; float c; float d; float tx; float ty; }
+
+// An image on the GPU, its size in pixels.
+struct CanvasImage { GpuTexture texture; int width; int height; }
+
+struct _CanvasDraw { *CanvasImage image; bool nearest; uint32 first; uint32 count; }
+
+struct Canvas {
+    Gpu gpu;
+    WGPUTextureFormat format;
+    GpuVertexLayout layout;
+    GpuPipeline pipeline;
+    GpuSampler nearest;
+    GpuSampler linear;
+    CanvasImage white;
+    GpuBuffer vertices;
+    uint64 capacity;
+    List<float> batch;
+    List<_CanvasDraw> draws;
+    WGPUTextureView target;
+    GpuColor clear;
+    float pixel_width;
+    float pixel_height;
+    float scale;
+    CanvasMatrix m;
+    List<CanvasMatrix> saved;
+    bool drawing;
+}
+
+string _canvas_shader =
+    "struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) color: vec4<f32> };\n"
+    "@group(0) @binding(0) var tex: texture_2d<f32>;\n"
+    "@group(0) @binding(1) var smp: sampler;\n"
+    "@vertex fn vs(@location(0) p: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) c: vec4<f32>) -> V {\n"
+    "    return V(vec4<f32>(p, 0.0, 1.0), uv, c);\n"
+    "}\n"
+    "@fragment fn fs(v: V) -> @location(0) vec4<f32> { return textureSample(tex, smp, v.uv) * v.color; }\n";
+
+// A canvas that draws into views of `format` (a surface's format, or RGBA8Unorm for a
+// texture made by Gpu_target).
+Result<Canvas, string> canvas_new(*Gpu gpu, WGPUTextureFormat format) {
+    Canvas c;
+    c.gpu = *gpu;
+    c.format = format;
+    c.scale = 1.0;
+    c.layout = GpuVertexLayout{stride: 32};
+    c.layout.add(WGPUVertexFormat_Float32x2, 0);
+    c.layout.add(WGPUVertexFormat_Float32x2, 8);
+    c.layout.add(WGPUVertexFormat_Float32x4, 16);
+    GpuPipelineDesc d = GpuPipelineDesc{wgsl: _canvas_shader, vertex: "vs", fragment: "fs", format: format,
+        layout: &c.layout, blend: true};
+    Result<GpuPipeline, string> pipe = gpu.pipeline(&d);
+    if (!pipe.ok) { c.layout.release(); return Err<Canvas, string>(pipe.error); }
+    c.pipeline = pipe.value;
+    GpuSamplerOptions o = GpuSamplerOptions{nearest: true, wrap_u: WGPUAddressMode_ClampToEdge, wrap_v: WGPUAddressMode_ClampToEdge};
+    Result<GpuSampler, string> s = gpu.sampler_with(&o);
+    if (!s.ok) { Canvas_release(&c); return Err<Canvas, string>(s.error); }
+    c.nearest = s.value;
+    o.nearest = false;
+    s = gpu.sampler_with(&o);
+    if (!s.ok) { Canvas_release(&c); return Err<Canvas, string>(s.error); }
+    c.linear = s.value;
+    uint32 white = 0xffffffff;
+    Result<CanvasImage, string> w = Canvas_image_rgba(&c, 1, 1, (*uint8)&white);
+    if (!w.ok) { Canvas_release(&c); return Err<Canvas, string>(w.error); }
+    c.white = w.value;
+    return Ok<Canvas, string>(c);
+}
+
+void Canvas_release(*Canvas self) {
+    CanvasImage_release(&self.white);
+    GpuSampler_release(&self.nearest);
+    GpuSampler_release(&self.linear);
+    GpuPipeline_release(&self.pipeline);
+    self.layout.release();
+    if (self.capacity > 0) { self.vertices.release(); }
+    self.capacity = 0;
+    self.batch.free();
+    self.draws.free();
+    self.saved.free();
+}
+
+// An image from width * height pixels of 4 bytes each (RGBA, the top row first).
+Result<CanvasImage, string> Canvas_image_rgba(*Canvas self, int width, int height, *uint8 rgba) {
+    GpuTexture t = self.gpu.image((uint32)width, (uint32)height, (*void)rgba)?;
+    return Ok<CanvasImage, string>(CanvasImage{t, width, height});
+}
+
+// An image from a decoded <gpu/image> Bitmap.
+Result<CanvasImage, string> Canvas_image(*Canvas self, *Bitmap image) {
+    return Canvas_image_rgba(self, (int)image.width, (int)image.height, image.rgba);
+}
+
+// An image from a PNG or JPEG held in memory.
+Result<CanvasImage, string> Canvas_image_decode(*Canvas self, *uint8 data, uint64 len) {
+    Bitmap decoded = image_decode(data, len)?;
+    defer decoded.free();
+    return Canvas_image(self, &decoded);
+}
+
+// An image from a PNG or JPEG file.
+Result<CanvasImage, string> Canvas_image_load(*Canvas self, string path) {
+    Bitmap decoded = image_load(path)?;
+    defer decoded.free();
+    return Canvas_image(self, &decoded);
+}
+
+// Replaces the image's pixels (the same size, 4 bytes each), for one drawn by the CPU.
+void CanvasImage_write(*CanvasImage self, *uint8 rgba) { self.texture.write((*void)rgba); }
+
+void CanvasImage_release(*CanvasImage self) { self.texture.release(); }
+
+// Starts a frame into `target`, `width` by `height` pixels, `scale` pixels per canvas unit,
+// cleared to `clear` (0xRRGGBBAA).
+void Canvas_begin(*Canvas self, WGPUTextureView target, uint32 width, uint32 height, float scale, uint32 clear) {
+    self.target = target;
+    self.pixel_width = (float)width;
+    self.pixel_height = (float)height;
+    self.scale = scale > 0 ? scale : 1.0;
+    self.clear = GpuColor{(double)((clear >> 24) & 255) / 255.0, (double)((clear >> 16) & 255) / 255.0,
+        (double)((clear >> 8) & 255) / 255.0, (double)(clear & 255) / 255.0};
+    self.m = CanvasMatrix{self.scale, 0, 0, self.scale, 0, 0};
+    self.saved.clear();
+    self.batch.clear();
+    self.draws.clear();
+    self.drawing = true;
+}
+
+// The canvas's size in canvas units.
+float Canvas_width(const Canvas* self) { return self.pixel_width / self.scale; }
+float Canvas_height(const Canvas* self) { return self.pixel_height / self.scale; }
+
+// The transform stack: save pushes the current transform, restore pops it.
+void Canvas_save(*Canvas self) { self.saved.push(self.m); }
+
+void Canvas_restore(*Canvas self) {
+    if (self.saved.size == 0) { return; }
+    self.m = self.saved.pop();
+}
+
+// Applies `t` before the current transform: later draws go through `t` first.
+void Canvas_concat(*Canvas self, CanvasMatrix t) {
+    CanvasMatrix m = self.m;
+    self.m = CanvasMatrix{m.a * t.a + m.c * t.b, m.b * t.a + m.d * t.b, m.a * t.c + m.c * t.d, m.b * t.c + m.d * t.d,
+        m.a * t.tx + m.c * t.ty + m.tx, m.b * t.tx + m.d * t.ty + m.ty};
+}
+
+void Canvas_translate(*Canvas self, float x, float y) { Canvas_concat(self, CanvasMatrix{1, 0, 0, 1, x, y}); }
+
+void Canvas_scale(*Canvas self, float sx, float sy) { Canvas_concat(self, CanvasMatrix{sx, 0, 0, sy, 0, 0}); }
+
+// Rotates by `degrees`, clockwise on the screen.
+void Canvas_rotate(*Canvas self, float degrees) {
+    double r = degrees * 3.14159265358979323846 / 180.0;
+    float cs = (float)cos(r);
+    float sn = (float)sin(r);
+    Canvas_concat(self, CanvasMatrix{cs, sn, -sn, cs, 0, 0});
+}
+
+void _canvas_vertex(*Canvas self, float x, float y, float u, float v, *float color) {
+    CanvasMatrix m = self.m;
+    float px = m.a * x + m.c * y + m.tx;
+    float py = m.b * x + m.d * y + m.ty;
+    self.batch.push(px / self.pixel_width * 2 - 1);
+    self.batch.push(1 - py / self.pixel_height * 2);
+    self.batch.push(u);
+    self.batch.push(v);
+    for (i in 0..4) { self.batch.push(color[i]); }
+}
+
+void _canvas_quad(*Canvas self, *CanvasImage image, bool nearest, CanvasRect src, CanvasRect dst, uint32 tint, float alpha) {
+    if (!self.drawing) { return; }
+    uint32 first = (uint32)(self.batch.size / 8);
+    int last = self.draws.size - 1;
+    if (last >= 0 && self.draws.data[last].image == image && self.draws.data[last].nearest == nearest) {
+        self.draws.data[last].count += 6;
+    } else {
+        self.draws.push(_CanvasDraw{image, nearest, first, 6});
+    }
+    float[4] color = {(float)((tint >> 24) & 255) / 255, (float)((tint >> 16) & 255) / 255,
+        (float)((tint >> 8) & 255) / 255, (float)(tint & 255) / 255 * alpha};
+    float iw = (float)image.width;
+    float ih = (float)image.height;
+    float u0 = src.x / iw;
+    float v0 = src.y / ih;
+    float u1 = (src.x + src.width) / iw;
+    float v1 = (src.y + src.height) / ih;
+    float x0 = dst.x;
+    float y0 = dst.y;
+    float x1 = dst.x + dst.width;
+    float y1 = dst.y + dst.height;
+    _canvas_vertex(self, x0, y0, u0, v0, &color[0]);
+    _canvas_vertex(self, x1, y0, u1, v0, &color[0]);
+    _canvas_vertex(self, x0, y1, u0, v1, &color[0]);
+    _canvas_vertex(self, x1, y0, u1, v0, &color[0]);
+    _canvas_vertex(self, x1, y1, u1, v1, &color[0]);
+    _canvas_vertex(self, x0, y1, u0, v1, &color[0]);
+}
+
+// Draws the `src` rect of `image` (in its pixels) into `dst` (in canvas units). A negative
+// width or height in `dst` mirrors the image.
+void Canvas_draw_image_rect(*Canvas self, *CanvasImage image, CanvasRect src, CanvasRect dst, Paint paint) {
+    _canvas_quad(self, image, paint.nearest, src, dst, paint.tint, paint.alpha);
+}
+
+// Draws the whole of `image` with its top left at (x, y), one canvas unit per pixel.
+void Canvas_draw_image(*Canvas self, *CanvasImage image, float x, float y, Paint paint) {
+    CanvasRect all = CanvasRect{0, 0, (float)image.width, (float)image.height};
+    _canvas_quad(self, image, paint.nearest, all, CanvasRect{x, y, (float)image.width, (float)image.height}, paint.tint, paint.alpha);
+}
+
+// Fills `rect` with `color` (0xRRGGBBAA).
+void Canvas_fill_rect(*Canvas self, CanvasRect rect, uint32 color) {
+    _canvas_quad(self, &self.white, true, CanvasRect{0, 0, 1, 1}, rect, color, 1.0);
+}
+
+// How many draw calls the frame so far takes.
+int Canvas_draw_calls(const Canvas* self) { return self.draws.size; }
+
+// Sends the frame's draws to the GPU.
+Result<int, string> Canvas_end(*Canvas self) {
+    if (!self.drawing) { return Ok<int, string>(0); }
+    self.drawing = false;
+    uint64 bytes = (uint64)self.batch.size * 4;
+    if (bytes > self.capacity) {
+        if (self.capacity > 0) { self.vertices.release(); }
+        uint64 size = 4096;
+        while (size < bytes) { size = size * 2; }
+        self.capacity = 0;
+        self.vertices = self.gpu.buffer(size, WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst)?;
+        self.capacity = size;
+    }
+    if (bytes > 0) { self.vertices.write(0, (*void)self.batch.data, bytes); }
+    GpuPass pass = self.gpu.pass(self.target, self.clear, null);
+    for (i in 0..self.draws.size) {
+        _CanvasDraw draw = self.draws.data[i];
+        self.pipeline.bind_texture(0, &draw.image.texture);
+        self.pipeline.bind_sampler(1, draw.nearest ? &self.nearest : &self.linear);
+        _gpu_pass_setup(&pass, &self.pipeline, &self.vertices);
+        wgpuRenderPassEncoderDraw(pass.pass, draw.count, 1, draw.first, 0);
+    }
+    pass.end()?;
+    return Ok<int, string>(self.draws.size);
+}

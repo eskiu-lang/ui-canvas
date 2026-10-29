@@ -1,0 +1,136 @@
+// ui.esk: CanvasView for eskiu-lang/ui apps (<canvas/ui>). A GpuView whose canvas is drawn
+// once per display frame (use_frame) while `running`, and once each time it is laid out:
+//
+//     CanvasView(Style{grow: 1}, playing.get(), void(*Canvas canvas, Tick tick) {
+//         world_step(&world, tick.delta);
+//         canvas.draw_image_rect(&atlas, cell, place, Paint{nearest: true});
+//     });
+//
+// The canvas is in points, like the layout, and is cleared to transparent before each draw.
+// Images are made from the canvas the callback gets (canvas.image_decode, image_rgba), the
+// first time it runs; the canvas, and what was made from it, lives as long as the view's
+// surface (a (0, 0) resize on Android drops it). Draws run on iOS and Android;
+// on the web and the desktop CanvasView is an empty box and the callback is never called.
+
+import <io>;
+import <mem>;
+import <result>;
+import <ui>;
+import <gpu/ui>;
+
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+import <gpu/raw>;
+import <gpu/core>;
+import <gpu/render>;
+import <canvas>;
+#else
+struct Canvas { int unused; }
+#endif
+
+struct _CanvasHost {
+    fn(*Canvas, Tick)->void draw;
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+    Gpu gpu;
+    bool has_gpu;
+    GpuSurface surface;
+    bool has_surface;
+    Canvas canvas;
+    bool has_canvas;
+#endif
+    uint32 width;
+    uint32 height;
+    float scale;
+    string error;
+}
+
+void _canvas_release_draw(escaping fn(*Canvas, Tick)->void draw) { free_closure(draw); }
+
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+void _canvas_drop_surface(*_CanvasHost host) {
+    if (host.has_canvas) { host.canvas.release(); host.has_canvas = false; }
+    if (host.has_surface) { host.surface.release(); host.has_surface = false; }
+}
+
+void _canvas_fail(*_CanvasHost host, string error) {
+    free(host.error);
+    host.error = ui_copy(error);
+    printf("canvas: %s\n", error);
+}
+
+bool _canvas_open(*_CanvasHost host) {
+    if (!host.has_gpu) {
+        Result<Gpu, string> gpu = gpu_open();
+        if (!gpu.ok) { _canvas_fail(host, gpu.error); return false; }
+        host.gpu = gpu.value;
+        host.has_gpu = true;
+    }
+    if (!host.has_surface) {
+        Result<GpuSurface, string> surface = gpu_ui_surface(&host.gpu);
+        if (!surface.ok) { _canvas_fail(host, surface.error); return false; }
+        host.surface = surface.value;
+        host.has_surface = true;
+    }
+    if (!host.has_canvas) {
+        Result<Canvas, string> canvas = canvas_new(&host.gpu, host.surface.format);
+        if (!canvas.ok) { _canvas_fail(host, canvas.error); return false; }
+        host.canvas = canvas.value;
+        host.has_canvas = true;
+    }
+    return true;
+}
+
+void _canvas_draw(*_CanvasHost host, Tick tick) {
+    if (host.width == 0 || host.height == 0 || !_canvas_open(host)) { return; }
+    Result<GpuFrame, string> frame = host.surface.frame();
+    if (!frame.ok) {
+        host.surface.configure(host.width, host.height);
+        return;
+    }
+    host.canvas.begin(frame.value.view, host.width, host.height, host.scale, 0x00000000);
+    host.draw(&host.canvas, tick);
+    Result<int, string> sent = host.canvas.end();
+    if (!sent.ok) { _canvas_fail(host, sent.error); }
+    host.surface.present(&frame.value);
+}
+#endif
+
+// A canvas drawn by `draw` once per display frame while `running`, and each time the view
+// gets a new size.
+void CanvasView(Style style, bool running, escaping fn(*Canvas, Tick)->void draw) {
+    static int tag;
+    *Slot slot = ui_slot(10, &tag);
+    *_CanvasHost host = (*_CanvasHost)slot.data;
+    if (host == null) {
+        host = alloc<_CanvasHost>(1);
+        slot.data = host;
+        slot.dispose = void() {
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+            _canvas_drop_surface(host);
+            if (host.has_gpu) { host.gpu.release(); }
+#endif
+            _canvas_release_draw(host.draw);
+            free(host.error);
+            free(host);
+        };
+    } else {
+        _canvas_release_draw(host.draw);
+    }
+    host.draw = draw;
+    Window window = ui_window();
+    host.scale = window.scale > 0 ? window.scale / 100.0 : 1.0;
+    use_gpu_surface(void(uint32 width, uint32 height) {
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+        if (width == 0 || height == 0) { _canvas_drop_surface(host); host.width = 0; host.height = 0; return; }
+        if (host.has_surface && (width != host.width || height != host.height)) { host.surface.configure(width, height); }
+        host.width = width;
+        host.height = height;
+        _canvas_draw(host, Tick{0, 0});
+#endif
+    });
+    use_frame(running, void(Tick tick) {
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+        _canvas_draw(host, tick);
+#endif
+    });
+    GpuView(style);
+}

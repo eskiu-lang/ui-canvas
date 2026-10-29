@@ -1,0 +1,5 @@
+# eskiu.lock: written by eskiuc (eskiuc fetch updates it); do not edit.
+canvas	path	../..
+demo	root	.
+gpu	path	../../../eskiu-gpu
+ui	path	../../../eskiu-ui
