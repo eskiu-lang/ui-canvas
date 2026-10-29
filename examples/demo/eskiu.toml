@@ -4,6 +4,6 @@ version = "0.1.0"
 main = "src/main.esk"
 
 [deps]
-ui = { path = "../../../eskiu-ui" }
-gpu = { path = "../../../eskiu-gpu" }
+ui = { git = "https://github.com/eskiu-lang/ui", rev = "v0.3.0" }
+gpu = { git = "https://github.com/eskiu-lang/gpu", rev = "v0.3.0" }
 canvas = { path = "../.." }

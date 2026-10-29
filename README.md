@@ -31,6 +31,14 @@ void Game() {
 `examples/demo` bounces pixel-art sprites from an atlas made in code (`ui run ios`,
 `android` or `web`).
 
+
+## Install
+
+In an app made with `ui new`:
+
+```bash
+eskiuc add canvas --git https://github.com/eskiu-lang/ui-canvas --rev v0.1.0
+```
 ## `<canvas>`
 
 | Call | Does |
