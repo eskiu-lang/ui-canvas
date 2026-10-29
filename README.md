@@ -3,7 +3,7 @@
 </p>
 
 <h2 align="center">canvas</h2>
-<p align="center">A 2D canvas for Eskiu, drawn by the GPU, in a ui app or offscreen.</p>
+<p align="center">A 2D canvas for Eskiu, in a ui app (the GPU on phones, Canvas 2D on the web) or offscreen.</p>
 <p align="center"><sub>Part of the <a href="https://github.com/eskiu-lang">Eskiu</a> project</sub></p>
 
 ---
