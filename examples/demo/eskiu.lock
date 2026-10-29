@@ -2,4 +2,4 @@
 canvas	path	../..
 demo	root	.
 gpu	git	https://github.com/eskiu-lang/gpu	v0.3.0	846e76cac4af7bf67f1131ccfe77b0036fe7ec35
-ui	git	https://github.com/eskiu-lang/ui	v0.3.0	842327c137c0d9f8e17bcf4319e3bbfd23f53ab3
+ui	git	https://github.com/eskiu-lang/ui	v0.3.0	58a771a037a4452b6dea1a62a2cf2093579dd48a
