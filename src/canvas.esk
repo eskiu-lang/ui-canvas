@@ -21,6 +21,7 @@ import <gpu/raw>;
 import <gpu/core>;
 import <gpu/render>;
 import <gpu/image>;
+import <fs>;
 
 struct CanvasRect { float x; float y; float width; float height; }
 
@@ -123,18 +124,43 @@ Result<CanvasImage, string> Canvas_image(*Canvas self, *Bitmap image) {
     return Canvas_image_rgba(self, (int)image.width, (int)image.height, image.rgba);
 }
 
-// An image from a PNG or JPEG held in memory.
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+// native/ios/decode.m (ImageIO) and native/android/decode.c (AImageDecoder): straight-alpha
+// RGBA from malloc, or null.
+extern *uint8 canvas_native_decode(*uint8 data, int64 len, *int width, *int height);
+#endif
+
+// PNG and JPEG, which <gpu/image> reads on every platform.
+bool canvas_gpu_format(*uint8 data, uint64 len) {
+    if (len >= 8 && data[0] == 137 && data[1] == 80 && data[2] == 78 && data[3] == 71) { return true; }
+    return len >= 3 && data[0] == 255 && data[1] == 216 && data[2] == 255;
+}
+
+// An image from an encoded file held in memory: PNG or JPEG everywhere, and on iOS and Android
+// what the platform decodes too (WebP; also HEIC and GIF's first frame; on Android, 11 and later).
 Result<CanvasImage, string> Canvas_image_decode(*Canvas self, *uint8 data, uint64 len) {
+#if defined(__ANDROID__) || defined(TARGET_OS_IPHONE)
+    if (!canvas_gpu_format(data, len)) {
+        int width = 0;
+        int height = 0;
+        *uint8 rgba = canvas_native_decode(data, (int64)len, &width, &height);
+        if (rgba == null) { return Err<CanvasImage, string>("canvas: the platform could not decode the image"); }
+        defer free((*void)rgba);
+        return Canvas_image_rgba(self, width, height, rgba);
+    }
+#endif
     Bitmap decoded = image_decode(data, len)?;
     defer decoded.free();
     return Canvas_image(self, &decoded);
 }
 
-// An image from a PNG or JPEG file.
+// An image from a file, in the formats of Canvas_image_decode.
 Result<CanvasImage, string> Canvas_image_load(*Canvas self, string path) {
-    Bitmap decoded = image_load(path)?;
-    defer decoded.free();
-    return Canvas_image(self, &decoded);
+    int64 n = 0;
+    *uint8 data = fs_read_all(path, &n);
+    if (data == null) { return Err<CanvasImage, string>("canvas: cannot read the image file"); }
+    defer free((*void)data);
+    return Canvas_image_decode(self, data, (uint64)n);
 }
 
 // Replaces the image's pixels (the same size, 4 bytes each), for one drawn by the CPU.
