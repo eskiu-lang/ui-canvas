@@ -36,7 +36,7 @@ void Game() {
 | Call | Does |
 |---|---|
 | `canvas_new(&gpu, format)` | a canvas for views of `format` (a surface's, or `RGBA8Unorm` for `Gpu_target`) |
-| `canvas.image_rgba(w, h, rgba)`, `image(&bitmap)`, `image_decode(data, len)`, `image_load(path)` | a `CanvasImage` from pixels, a `<gpu/image>` `Bitmap`, or PNG / JPEG bytes or a file |
+| `canvas.image_rgba(w, h, rgba)`, `image(&bitmap)`, `image_decode(data, len)`, `image_load(path)` | a `CanvasImage` from pixels, a `<gpu/image>` `Bitmap`, or encoded bytes or a file: PNG and JPEG everywhere, and on iOS and Android what the platform decodes (WebP, HEIC, GIF; Android 11 and later) |
 | `image.write(rgba)` | replace an image's pixels (same size) |
 | `canvas.begin(view, width, height, scale, clear)` | start a frame: `width` x `height` pixels, `scale` pixels per unit, cleared to `0xRRGGBBAA` |
 | `canvas.draw_image_rect(&img, src, dst, paint)` | the `src` rect of the image (pixels) into `dst` (units); a negative width or height mirrors |
@@ -48,6 +48,14 @@ void Game() {
 
 `Paint{alpha, tint, nearest}` defaults to opaque, untinted and linear. Colors use straight
 alpha.
+
+An image in the app's `assets/` loads by its path from ui's `ui_asset_path`:
+
+```eskiu
+string path = ui_asset_path("sprites/atlas.webp");
+CanvasImage atlas = canvas.image_load(path)?;
+free(path);
+```
 
 ## `<canvas/ui>`
 
