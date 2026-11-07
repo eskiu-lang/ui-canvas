@@ -30,6 +30,8 @@ extern double sin(double x);
 extern double cos(double x);
 #endif
 
+// A rectangle: its top left corner and its size, in canvas units (or in an image's pixels
+// for a source rect).
 struct CanvasRect { float x; float y; float width; float height; }
 
 // How an image is drawn: its opacity (0 to 1), a color its pixels are multiplied by
@@ -73,6 +75,8 @@ Canvas canvas_web_new(int view) {
     return c;
 }
 
+// Frees what the canvas holds (on the GPU: its pipeline, samplers and buffers). The images
+// made from it are released on their own.
 void Canvas_release(*Canvas self) { self.saved.free(); }
 
 // An image from width * height pixels of 4 bytes each (RGBA, the top row first).
@@ -88,6 +92,8 @@ struct CanvasImage { GpuTexture texture; int width; int height; }
 
 struct _CanvasDraw { *CanvasImage image; bool nearest; uint32 first; uint32 count; }
 
+// A canvas drawing on the GPU: its pipeline, samplers, the frame's batch of vertices and
+// draws, and the transform stack. Made by canvas_new, freed with Canvas_release.
 struct Canvas {
     Gpu gpu;
     WGPUTextureFormat format;
@@ -150,6 +156,8 @@ Result<Canvas, string> canvas_new(*Gpu gpu, WGPUTextureFormat format) {
     return Ok<Canvas, string>(c);
 }
 
+// Frees what the canvas holds (on the GPU: its pipeline, samplers and buffers). The images
+// made from it are released on their own.
 void Canvas_release(*Canvas self) {
     CanvasImage_release(&self.white);
     GpuSampler_release(&self.nearest);
@@ -219,6 +227,7 @@ Result<CanvasImage, string> Canvas_image_load(*Canvas self, string path) {
 // Replaces the image's pixels (the same size, 4 bytes each), for one drawn by the CPU.
 void CanvasImage_write(*CanvasImage self, *uint8 rgba) { canvas_web_image_write(self.id, rgba); }
 
+// Frees the image (its texture, or its element on the web).
 void CanvasImage_release(*CanvasImage self) { canvas_web_image_release(self.id); }
 
 // Starts a frame on the view's <canvas>, `width` by `height` pixels, `scale` pixels per canvas
@@ -237,6 +246,7 @@ void Canvas_begin(*Canvas self, uint32 width, uint32 height, float scale, uint32
 // Replaces the image's pixels (the same size, 4 bytes each), for one drawn by the CPU.
 void CanvasImage_write(*CanvasImage self, *uint8 rgba) { self.texture.write((*void)rgba); }
 
+// Frees the image (its texture, or its element on the web).
 void CanvasImage_release(*CanvasImage self) { self.texture.release(); }
 
 // Starts a frame into `target`, `width` by `height` pixels, `scale` pixels per canvas unit,
@@ -259,11 +269,13 @@ void Canvas_begin(*Canvas self, WGPUTextureView target, uint32 width, uint32 hei
 
 // The canvas's size in canvas units.
 float Canvas_width(const Canvas* self) { return self.pixel_width / self.scale; }
+// The canvas's height in canvas units.
 float Canvas_height(const Canvas* self) { return self.pixel_height / self.scale; }
 
 // The transform stack: save pushes the current transform, restore pops it.
 void Canvas_save(*Canvas self) { self.saved.push(self.m); }
 
+// Pops the transform save pushed last; nothing when the stack is empty.
 void Canvas_restore(*Canvas self) {
     if (self.saved.size == 0) { return; }
     self.m = self.saved.pop();
@@ -276,8 +288,10 @@ void Canvas_concat(*Canvas self, CanvasMatrix t) {
         m.a * t.tx + m.c * t.ty + m.tx, m.b * t.tx + m.d * t.ty + m.ty};
 }
 
+// Moves later draws by (x, y) canvas units.
 void Canvas_translate(*Canvas self, float x, float y) { Canvas_concat(self, CanvasMatrix{1, 0, 0, 1, x, y}); }
 
+// Scales later draws by `sx` horizontally and `sy` vertically.
 void Canvas_scale(*Canvas self, float sx, float sy) { Canvas_concat(self, CanvasMatrix{sx, 0, 0, sy, 0, 0}); }
 
 // Rotates by `degrees`, clockwise on the screen.
