@@ -1,5 +1,5 @@
 # eskiu.lock: written by eskiuc (eskiuc fetch updates it); do not edit.
 canvas	path	../..
 demo	root	.
-gpu	git	https://github.com/eskiu-lang/gpu	v0.3.0	846e76cac4af7bf67f1131ccfe77b0036fe7ec35
+gpu	git	https://github.com/eskiu-lang/gpu	v0.5.0	11ba73cae56480231559dadbff65b1b32b2bdcb0
 ui	git	https://github.com/eskiu-lang/ui	v0.3.0	58a771a037a4452b6dea1a62a2cf2093579dd48a
