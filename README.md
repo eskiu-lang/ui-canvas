@@ -32,6 +32,10 @@ void Game() {
 `android` or `web`).
 
 
+## Documentation
+
+Every public function and type, with its documentation, is in the [API reference](docs/api.md).
+
 ## Install
 
 In an app made with `ui new`:
