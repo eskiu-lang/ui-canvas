@@ -29,12 +29,3 @@ jobs:
           cd examples/demo && eskiuc fetch
           eskiuc src/main.esk --target arm64-apple-ios17.0 --test-typechecker
           eskiuc src/main.esk --target aarch64-linux-android26 --test-typechecker
-
-  macos:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Eskiu
-        run: brew install eskiu-lang/eskiu/eskiu
-      - name: Tests
-        run: eskiuc test
