@@ -9,7 +9,7 @@
 ---
 
 `canvas` draws images, atlas cells and filled rects with WebGPU through
-[`gpu`](https://github.com/eskiu-lang/gpu). It is made for sprites and pixel art: each draw
+[`gpu`](https://github.com/eskiu-packages/gpu). It is made for sprites and pixel art: each draw
 takes a source rect, a destination rect, an opacity, a tint and nearest or linear sampling,
 and draws are batched into one draw call per run of the same image.
 
@@ -41,7 +41,7 @@ Every public function and type, with its documentation, is in the [API reference
 In an app made with `ui new`:
 
 ```bash
-eskiuc add canvas --git https://github.com/eskiu-lang/ui-canvas --rev v0.1.1
+eskiuc add canvas --git https://github.com/eskiu-packages/ui-canvas --rev v0.1.1
 ```
 ## `<canvas>`
 

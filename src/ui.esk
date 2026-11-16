@@ -1,4 +1,4 @@
-// ui.esk: CanvasView for eskiu-lang/ui apps (<canvas/ui>). A GpuView whose canvas is drawn
+// ui.esk: CanvasView for eskiu-packages/ui apps (<canvas/ui>). A GpuView whose canvas is drawn
 // once per display frame (use_frame) while `running`, and once each time it is laid out:
 //
 //     CanvasView(Style{grow: 1}, playing.get(), void(*Canvas canvas, Tick tick) {

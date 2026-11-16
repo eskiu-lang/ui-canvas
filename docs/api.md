@@ -315,7 +315,7 @@ Sends the frame's draws to the GPU.
 
 ## `<canvas/ui>`
 
-CanvasView for eskiu-lang/ui apps (`<canvas/ui>`). A GpuView whose canvas is drawn
+CanvasView for eskiu-packages/ui apps (`<canvas/ui>`). A GpuView whose canvas is drawn
 once per display frame (use_frame) while `running`, and once each time it is laid out:
 
 ```eskiu
