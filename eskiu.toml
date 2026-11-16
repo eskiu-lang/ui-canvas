@@ -3,5 +3,5 @@ name = "canvas"
 version = "0.1.1"
 
 [deps]
-ui = { git = "https://github.com/eskiu-packages/ui", rev = "v0.6.0" }
-gpu = { git = "https://github.com/eskiu-packages/gpu", rev = "v0.7.0" }
+ui = { git = "https://github.com/eskiu-packages/ui", rev = "v0.6.1" }
+gpu = { git = "https://github.com/eskiu-packages/gpu", rev = "v0.7.1" }
