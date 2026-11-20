@@ -41,7 +41,7 @@ Every public function and type, with its documentation, is in the [API reference
 In an app made with `ui new`:
 
 ```bash
-eskiuc add canvas --git https://github.com/eskiu-packages/ui-canvas --rev v0.1.2
+eskiuc add canvas --git https://github.com/eskiu-packages/ui-canvas --rev v0.1.3
 ```
 ## `<canvas>`
 
